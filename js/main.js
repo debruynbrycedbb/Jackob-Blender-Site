@@ -234,9 +234,10 @@ const hookMat = new THREE.MeshPhysicalMaterial({ color: 0xbfc8d2, metalness: 1, 
 const JACKET_DROP = 0.155;          // swivel → collar top
 const YAW_SIDE = -Math.PI / 2;      // side to the visitor, front facing left
 const YAW_BACK = -Math.PI;          // back to the visitor
-let jacket = null, morphMesh = null;
-const jacketHit = new THREE.Mesh(new THREE.BoxGeometry(0.82, 0.74, 0.36), new THREE.MeshBasicMaterial({ visible: false }));
-jacketHit.position.y = -JACKET_DROP - 0.34;
+let jacket = null;
+const morphMeshes = [];             // front and back halves each carry the sway shape keys
+const jacketHit = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.78, 0.22), new THREE.MeshBasicMaterial({ visible: false }));
+jacketHit.position.y = -JACKET_DROP - 0.36;
 swivel.add(jacketHit);
 
 const rackHit = new THREE.Mesh(new THREE.PlaneGeometry(POST_X * 2 + 0.3, BAR_Y + 0.12), new THREE.MeshBasicMaterial({ visible: false }));
@@ -250,7 +251,7 @@ loader.load("assets/denim_jacket.glb", gltf => {
   jacket.traverse(o => {
     if (o.isMesh) {
       o.castShadow = true;
-      if (o.morphTargetInfluences) morphMesh = o;
+      if (o.morphTargetInfluences) morphMeshes.push(o);
       o.material.envMapIntensity = 0.12;
       // the export carries a full-white sheen; keep a faint denim nap instead
       if (o.material.sheenColor) { o.material.sheenColor.setScalar(0.14); o.material.sheenRoughness = 0.7; }
@@ -323,7 +324,7 @@ const P = {
   theta: 0, thetaV: 0, phi: 0, phiV: 0,
   psi: YAW_SIDE, psiV: 0, psiTarget: YAW_SIDE,
   turnFrom: YAW_SIDE, turnTo: YAW_SIDE, turnT: 1, turnDur: 1.5,
-  hemX: 0, hemXV: 0, hemZ: 0, hemZV: 0, twistLag: 0, twistLagV: 0,
+  hemX: 0, hemXV: 0, hemZ: 0, hemZV: 0, twistLag: 0, twistLagV: 0, sleeve: 0, sleeveV: 0,
   facing: "side",
 };
 const G_OVER_L = 9.81 / 0.47;
@@ -364,22 +365,30 @@ function stepPhysics(dt) {
   // cloth: the hem lags behind the swing and the turn (drives the jacket's sway shape keys).
   // The hem's lag points opposite to the body's acceleration.
   const k = 70, c = 7.5;
-  P.hemZV += (k * (thetaA * 0.025 - P.hemZ) - c * P.hemZV) * dt; P.hemZ += P.hemZV * dt;
+  P.hemZV += (k * (thetaA * 0.016 - P.hemZ) - c * P.hemZV) * dt; P.hemZ += P.hemZV * dt;
   P.hemXV += (k * (-phiA * 0.02 - P.hemX) - c * P.hemXV) * dt; P.hemX += P.hemXV * dt;
   P.twistLagV += (55 * (-P.psiV * 0.012 - P.twistLag) - 6 * P.twistLagV) * dt; P.twistLag += P.twistLagV * dt;
+  // sleeves hang free from the shoulders: a looser, slower spring that trails the hem front-to-back
+  const lzNow = Math.sin(P.psi) * P.hemX + Math.cos(P.psi) * P.hemZ;
+  P.sleeveV += (26 * (-lzNow * 1.4 - P.sleeve) - 3.4 * P.sleeveV) * dt; P.sleeve += P.sleeveV * dt;
 }
 
 function poseJacket() {
   pivot.rotation.set(P.theta, 0, P.phi);
   swivel.rotation.y = P.psi;
-  if (morphMesh) {
-    // world-space hem offset → jacket-local axes (Sway_Side = local +x, Sway_Depth = local −z)
+  if (morphMeshes.length) {
+    // world-space hem offset → jacket-local axes (Sway_Side = local +x, Sway_Depth = local −z,
+    // Sleeves_Swing = sleeve cuffs toward local +z)
     const cs = Math.cos(P.psi), sn = Math.sin(P.psi);
     const lx = cs * P.hemX - sn * P.hemZ + P.twistLag;
     const lz = sn * P.hemX + cs * P.hemZ;
-    const inf = morphMesh.morphTargetInfluences;
-    inf[0] = THREE.MathUtils.clamp(lx / 0.035, -1, 1);
-    inf[1] = THREE.MathUtils.clamp(-lz / 0.025, -1, 1);
+    const w0 = THREE.MathUtils.clamp(lx / 0.035, -1, 1);
+    const w1 = THREE.MathUtils.clamp(-lz / 0.025, -1, 1);
+    const w2 = THREE.MathUtils.clamp(P.sleeve / 0.07, -1, 1);
+    for (const m of morphMeshes) {
+      const inf = m.morphTargetInfluences;
+      inf[0] = w0; inf[1] = w1; if (inf.length > 2) inf[2] = w2;
+    }
   }
 }
 
