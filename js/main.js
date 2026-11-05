@@ -203,75 +203,100 @@ scene.add(reflector);
   };
 }
 
-// ------------------------------------------------------------------ hanger: swivel hook on the bar
-// pivot = the hook's seat on the bar; it swings about the bar. The swivel turns the hanger
-// (and jacket) about the vertical axis beneath the hook.
-const pivot = new THREE.Group();
-pivot.position.set(0, BAR_Y, RACK_Z);
-scene.add(pivot);
-const swivel = new THREE.Group();
-pivot.add(swivel);
+// ------------------------------------------------------------------ the jackets
+// Left to right on the bar. Each hangs from its own swivel hook that can slide along the bar.
+const JACKETS = [
+  { id: "blue",  file: "assets/jacket_blue.glb",  name: "Charcoal denim jacket",   note: "Back: Sagrada Família in blue" },
+  { id: "amber", file: "assets/jacket_amber.glb", name: "Charcoal denim jacket",   note: "Back: Sagrada Família in amber" },
+  { id: "sun",   file: "assets/jacket_sun.glb",   name: "Light-wash denim jacket", note: "Back: sequinned sunburst with an eye" },
+];
+const N = JACKETS.length;
+const JACKET_DROP = 0.155;          // swivel → collar top
+const YAW_SIDE = -Math.PI / 2;      // side to the visitor, front facing left
+const YAW_BACK = -Math.PI;          // back to the visitor
+const GROUP_GAP = 0.24;             // spacing when they hang together, side-on
+const PARK_NEAR = 0.76, PARK_GAP = 0.22;   // where the others wait while one is brought forward
+const SLIDE_DUR = 1.6, TURN_DUR = 1.4;
+const L_PEND = 0.47, G_OVER_L = 9.81 / L_PEND;
 
 const hookMat = new THREE.MeshPhysicalMaterial({ color: 0xbfc8d2, metalness: 1, roughness: 0.3 });
-{
+const hookGeo = (() => {
   const r = TUBE_R + 0.0045;
   const pts = [
     [0, -0.07, 0], [0, -0.045, 0], [0, -0.03, 0.004], [0, -0.016, 0.011],
     [0, -0.002, r], [0, r * 0.72, r * 0.72], [0, r, 0], [0, r * 0.72, -r * 0.72], [0, 0.0, -r], [0, -0.011, -r * 0.8],
   ].map(p => new THREE.Vector3(...p));
-  const hook = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 80, 0.0032, 10, false), hookMat);
-  hook.castShadow = true;
-  pivot.add(hook);
-  const swivelCap = new THREE.Mesh(new THREE.CylinderGeometry(0.0062, 0.0062, 0.012, 16), hookMat);
-  swivelCap.position.y = -0.074;
-  pivot.add(swivelCap);
-  const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.0034, 0.0034, 0.09, 10), hookMat);
-  neck.position.y = -0.125;
-  swivel.add(neck);
+  return new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 80, 0.0032, 10, false);
+})();
+const capGeo = new THREE.CylinderGeometry(0.0062, 0.0062, 0.012, 16);
+const neckGeo = new THREE.CylinderGeometry(0.0034, 0.0034, 0.09, 10);
+const hitGeo = new THREE.BoxGeometry(0.6, 0.78, 0.22);
+const hitMat = new THREE.MeshBasicMaterial({ visible: false });
+
+const groupX = i => (i - (N - 1) / 2) * GROUP_GAP;
+function parkedX(i, sel) {
+  if (i === sel) return 0;
+  if (i < sel) return -PARK_NEAR - (sel - 1 - i) * PARK_GAP;   // keeps their order: hooks can't pass each other
+  return PARK_NEAR + (i - sel - 1) * PARK_GAP;
 }
 
-// ------------------------------------------------------------------ jacket
-const JACKET_DROP = 0.155;          // swivel → collar top
-const YAW_SIDE = -Math.PI / 2;      // side to the visitor, front facing left
-const YAW_BACK = -Math.PI;          // back to the visitor
-let jacket = null;
-const morphMeshes = [];             // front and back halves each carry the sway shape keys
-const jacketHit = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.78, 0.22), new THREE.MeshBasicMaterial({ visible: false }));
-jacketHit.position.y = -JACKET_DROP - 0.36;
-swivel.add(jacketHit);
+const jackets = JACKETS.map((def, i) => {
+  const pivot = new THREE.Group();
+  const x = groupX(i);
+  pivot.position.set(x, BAR_Y, RACK_Z);
+  scene.add(pivot);
+  const swivel = new THREE.Group();
+  pivot.add(swivel);
+  const hook = new THREE.Mesh(hookGeo, hookMat); hook.castShadow = true; pivot.add(hook);
+  const cap = new THREE.Mesh(capGeo, hookMat); cap.position.y = -0.074; pivot.add(cap);
+  const neck = new THREE.Mesh(neckGeo, hookMat); neck.position.y = -0.125; swivel.add(neck);
+  const hit = new THREE.Mesh(hitGeo, hitMat); hit.position.y = -JACKET_DROP - 0.36; swivel.add(hit);
+  hit.userData.jacket = i;
+  return {
+    i, def, pivot, swivel, hit, model: null, morphs: [], fade: 0, fadeStart: 0,
+    // swing about the bar (θ), rock along the bar (φ), turn on the swivel (ψ)
+    theta: 0, thetaV: 0, phi: 0, phiV: 0,
+    psi: YAW_SIDE, psiV: 0, psiTarget: YAW_SIDE,
+    turnFrom: YAW_SIDE, turnTo: YAW_SIDE, turnT: 1, facing: "side",
+    // hook position along the bar (eased slide) and its velocity, for the swing it causes
+    x, xFrom: x, xTo: x, slideT: 1, xV: 0,
+    hemX: 0, hemXV: 0, hemZ: 0, hemZV: 0, twistLag: 0, twistLagV: 0, sleeve: 0, sleeveV: 0,
+    seed: i * 1.9 + 0.4,
+  };
+});
 
-const rackHit = new THREE.Mesh(new THREE.PlaneGeometry(POST_X * 2 + 0.3, BAR_Y + 0.12), new THREE.MeshBasicMaterial({ visible: false }));
+const rackHit = new THREE.Mesh(new THREE.PlaneGeometry(POST_X * 2 + 0.3, BAR_Y + 0.12), hitMat);
 rackHit.position.set(0, (BAR_Y + 0.12) / 2 - 0.02, 0);
 rack.add(rackHit);
 
 const loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
-loader.load("assets/denim_jacket.glb", gltf => {
-  jacket = gltf.scene;
-  jacket.position.y = -JACKET_DROP;
-  jacket.traverse(o => {
-    if (o.isMesh) {
+let loaded = 0;
+for (const J of jackets) {
+  loader.load(J.def.file, gltf => {
+    const model = gltf.scene;
+    model.position.y = -JACKET_DROP;
+    model.traverse(o => {
+      if (!o.isMesh) return;
       o.castShadow = true;
-      if (o.morphTargetInfluences) morphMeshes.push(o);
+      o.userData.jacket = J.i;
+      if (o.morphTargetInfluences) J.morphs.push(o);
       o.material.envMapIntensity = 0.12;
-      // the export carries a full-white sheen; keep a faint denim nap instead
       if (o.material.sheenColor) { o.material.sheenColor.setScalar(0.14); o.material.sheenRoughness = 0.7; }
       o.material.transparent = true; o.material.opacity = 0;
-    }
+    });
+    J.swivel.add(model);
+    J.model = model; J.fade = 0.0001; J.fadeStart = performance.now();
+    if (++loaded === 1) loadingEl.classList.add("done");
+  }, undefined, err => {
+    console.error(err);
+    loadingEl.textContent = "A jacket could not be loaded. Refresh to try again.";
+    loadingEl.classList.remove("done");
   });
-  // the GLB's own looping sway is replaced by live physics here
-  jacket.children.forEach(c => c.rotation.set(0, 0, 0));
-  swivel.add(jacket);
-  fadeJacket = 0.0001; fadeStart = performance.now();
-  loadingEl.classList.add("done");
-  requestRender();
-}, undefined, err => {
-  console.error(err);
-  loadingEl.textContent = "The jacket could not be loaded. Refresh to try again.";
-});
-let fadeJacket = 0, fadeStart = 0;
+}
 
 // ------------------------------------------------------------------ framing (zoom = crop of the calibrated view)
 function viewportAspect() { return canvas.clientWidth / Math.max(1, canvas.clientHeight); }
+const worldYToPx = y => IMG.cy - (y - CAM_H) * PX_PER_M;   // at the rack's depth
 function roomCrop(a) {
   const imgA = IMG.w / IMG.h;
   if (a >= imgA) return { cx: IMG.cx, cy: IMG.cy, w: IMG.w };     // wide: full width, trim top/bottom evenly
@@ -290,13 +315,20 @@ function rackCrop(a) {
   const cy = Math.min(Math.max((RACK_BOX.y0 + RACK_BOX.y1) / 2 + 4, h / 2), IMG.h + IMG.pad - h / 2);
   return { cx: (RACK_BOX.x0 + RACK_BOX.x1) / 2, cy, w };
 }
+function focusCrop(a) {
+  // the centre of the bar: from just above the bar to below the hem, jacket centred
+  const top = worldYToPx(BAR_Y + 0.24), bot = worldYToPx(0.5);
+  let h = bot - top, w = h * a;
+  const minW = 0.82 * PX_PER_M;          // room for the jacket turned to its back, on narrow screens
+  if (w < minW) { w = minW; h = w / a; }
+  return { cx: IMG.cx, cy: (top + bot) / 2 + 6, w };
+}
 const CEILING_LIGHT = { x0: 330, x1: 1340, y1: 112 };   // the bright disc in the photo, in pixels
 let headerOnLight = null;
 function applyCrop(c) {
   const a = viewportAspect(), h = c.w / a;
   const x0 = c.cx - c.w / 2, y0 = c.cy - h / 2;
   camera.setViewOffset(IMG.w, IMG.h, x0, y0, c.w, h);
-  // switch the header to dark ink when it sits on the ceiling light
   const vw = canvas.clientWidth, vh = canvas.clientHeight;
   const yImg = y0 + (40 / vh) * h;
   const leftX = x0 + (60 / vw) * c.w, rightX = x0 + ((vw - 60) / vw) * c.w;
@@ -304,116 +336,146 @@ function applyCrop(c) {
   if (onLight !== headerOnLight) { headerOnLight = onLight; document.body.classList.toggle("header-on-light", onLight); }
 }
 
-const view = { name: "room", from: null, to: null, t: 1, dur: 1.6, current: null };
-function cropFor(name) { return name === "rack" ? rackCrop(viewportAspect()) : roomCrop(viewportAspect()); }
+const view = { name: "room", from: null, t: 1, dur: 1.6, current: null };
+function cropFor(name) {
+  const a = viewportAspect();
+  return name === "focus" ? focusCrop(a) : name === "rack" ? rackCrop(a) : roomCrop(a);
+}
 function goTo(name) {
   if (view.name === name && view.t >= 1) return;
   view.from = view.current ? { ...view.current } : cropFor(view.name);
   view.name = name; view.t = 0; view.dur = reduceMotion ? 0.35 : 1.6;
   document.body.dataset.view = name;
-  backBtn.hidden = name !== "rack";
-  updateHint();
-  requestRender();
+  backBtn.hidden = name === "room";
+  updateCaption(); updateHint();
 }
 const easeInOut = t => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+const smoother = t => t * t * t * (t * (t * 6 - 15) + 10);   // zero speed and acceleration at both ends
 
-// ------------------------------------------------------------------ hanging physics
-// θ: swing about the bar (toward/away from the visitor); φ: small sideways rock along the bar;
-// ψ: turn on the swivel, a damped torsion spring that follows a hand-turned target.
-const P = {
-  theta: 0, thetaV: 0, phi: 0, phiV: 0,
-  psi: YAW_SIDE, psiV: 0, psiTarget: YAW_SIDE,
-  turnFrom: YAW_SIDE, turnTo: YAW_SIDE, turnT: 1, turnDur: 1.5,
-  hemX: 0, hemXV: 0, hemZ: 0, hemZV: 0, twistLag: 0, twistLagV: 0, sleeve: 0, sleeveV: 0,
-  facing: "side",
-};
-const G_OVER_L = 9.81 / 0.47;
+// ------------------------------------------------------------------ choreography (in simulation time)
 let simTime = 0;
+let queue = [];
+const later = (delay, fn) => queue.push({ at: simTime + delay, fn });
+let selected = null;                // index of the jacket brought forward, or null
 
-function turnJacket() {
-  P.facing = P.facing === "side" ? "back" : "side";
-  P.turnFrom = P.psiTarget;
-  P.turnTo = P.facing === "back" ? YAW_BACK : YAW_SIDE;
-  P.turnT = 0;
-  P.turnDur = reduceMotion ? 0.6 : 1.5;
-  // the hand that turns it also nudges the hem a little
-  if (!reduceMotion) { P.thetaV += 0.26; P.phiV += P.facing === "back" ? -0.12 : 0.12; }
+function turn(J, to) {
+  const target = to === "back" ? YAW_BACK : YAW_SIDE;
+  if (J.facing === to && J.turnTo === target) return;
+  J.facing = to; J.turnFrom = J.psiTarget; J.turnTo = target; J.turnT = 0;
+  if (!reduceMotion) { J.thetaV += 0.24; J.phiV += to === "back" ? -0.1 : 0.1; }  // the hand nudges it
   updateHint();
 }
-
-function stepPhysics(dt) {
-  simTime += dt;
-  // hand-turned target (eased), torsion spring follows with a little overshoot
-  if (P.turnT < 1) {
-    P.turnT = Math.min(1, P.turnT + dt / P.turnDur);
-    P.psiTarget = P.turnFrom + (P.turnTo - P.turnFrom) * easeInOut(P.turnT);
-  }
-  const breeze = reduceMotion ? 0 : 1;
-  const kT = 34, cT = 5.4;
-  const psiA = kT * (P.psiTarget - P.psi) - cT * P.psiV
-    + breeze * (0.5 * Math.sin(simTime * 0.53) + 0.3 * Math.sin(simTime * 1.37 + 0.8));
-  P.psiV += psiA * dt; P.psi += P.psiV * dt;
-
-  // physical pendulum about the bar; turning couples a little energy into the swing
-  const thetaA = -G_OVER_L * Math.sin(P.theta) - 0.85 * P.thetaV + 0.055 * psiA
-    + breeze * (0.22 * Math.sin(simTime * 0.71) + 0.12 * Math.sin(simTime * 1.9 + 2.1));
-  P.thetaV += thetaA * dt; P.theta += P.thetaV * dt;
-  // rocking along the bar is stiffer (hook seat), so it is quicker and smaller
-  const phiA = -60 * P.phi - 3.2 * P.phiV + 0.03 * psiA + breeze * 0.3 * Math.sin(simTime * 1.13 + 0.4);
-  P.phiV += phiA * dt; P.phi += P.phiV * dt;
-
-  // cloth: the hem lags behind the swing and the turn (drives the jacket's sway shape keys).
-  // The hem's lag points opposite to the body's acceleration.
-  const k = 70, c = 7.5;
-  P.hemZV += (k * (thetaA * 0.016 - P.hemZ) - c * P.hemZV) * dt; P.hemZ += P.hemZV * dt;
-  P.hemXV += (k * (-phiA * 0.02 - P.hemX) - c * P.hemXV) * dt; P.hemX += P.hemXV * dt;
-  P.twistLagV += (55 * (-P.psiV * 0.012 - P.twistLag) - 6 * P.twistLagV) * dt; P.twistLag += P.twistLagV * dt;
-  // sleeves hang free from the shoulders: a looser, slower spring that trails the hem front-to-back
-  const lzNow = Math.sin(P.psi) * P.hemX + Math.cos(P.psi) * P.hemZ;
-  P.sleeveV += (26 * (-lzNow * 1.4 - P.sleeve) - 3.4 * P.sleeveV) * dt; P.sleeve += P.sleeveV * dt;
+function slide(J, x) {
+  J.xFrom = J.x; J.xTo = x; J.slideT = 0;
+}
+function arrangeFor(sel, delay) {
+  later(delay, () => jackets.forEach(J => slide(J, sel === null ? groupX(J.i) : parkedX(J.i, sel))));
+}
+function select(i) {
+  if (view.name === "room") goTo("rack");
+  if (selected === i) { turn(jackets[i], jackets[i].facing === "side" ? "back" : "side"); return; }
+  queue = [];
+  // whatever is turned around goes back to side-on first, so nothing swings into a neighbour
+  let delay = 0;
+  for (const J of jackets) if (J.facing === "back" || J.turnT < 1) { turn(J, "side"); delay = reduceMotion ? 0.3 : 0.8; }
+  selected = i;
+  updateCaption();
+  arrangeFor(i, delay);
+  later(delay + (reduceMotion ? 0.5 : SLIDE_DUR - 0.2), () => { if (selected === i) turn(jackets[i], "back"); });
+  goTo("focus");
+}
+function stepBack() {
+  if (view.name === "focus") {
+    queue = [];
+    let delay = 0;
+    for (const J of jackets) if (J.facing === "back" || J.turnT < 1) { turn(J, "side"); delay = reduceMotion ? 0.3 : 0.8; }
+    selected = null;
+    arrangeFor(null, delay);
+    goTo("rack");
+  } else if (view.name === "rack") goTo("room");
 }
 
-function poseJacket() {
-  pivot.rotation.set(P.theta, 0, P.phi);
-  swivel.rotation.y = P.psi;
-  if (morphMeshes.length) {
-    // world-space hem offset → jacket-local axes (Sway_Side = local +x, Sway_Depth = local −z,
-    // Sleeves_Swing = sleeve cuffs toward local +z)
-    const cs = Math.cos(P.psi), sn = Math.sin(P.psi);
-    const lx = cs * P.hemX - sn * P.hemZ + P.twistLag;
-    const lz = sn * P.hemX + cs * P.hemZ;
-    const w0 = THREE.MathUtils.clamp(lx / 0.035, -1, 1);
-    const w1 = THREE.MathUtils.clamp(-lz / 0.025, -1, 1);
-    const w2 = THREE.MathUtils.clamp(P.sleeve / 0.07, -1, 1);
-    for (const m of morphMeshes) {
-      const inf = m.morphTargetInfluences;
-      inf[0] = w0; inf[1] = w1; if (inf.length > 2) inf[2] = w2;
-    }
+// ------------------------------------------------------------------ hanging physics
+function stepJacket(J, dt) {
+  const breeze = reduceMotion ? 0 : 1, t = simTime + J.seed * 7;
+  // hook slides along the bar; its acceleration makes the jacket swing along the bar
+  if (J.slideT < 1) {
+    J.slideT = Math.min(1, J.slideT + dt / (reduceMotion ? 0.6 : SLIDE_DUR));
+    const nx = J.xFrom + (J.xTo - J.xFrom) * smoother(J.slideT);
+    const v = (nx - J.x) / dt;
+    J.xA = THREE.MathUtils.clamp((v - J.xV) / dt, -4, 4);
+    J.xV = v; J.x = nx;
+  } else { J.xA = THREE.MathUtils.clamp(-J.xV / dt, -4, 4); J.xV = 0; }
+
+  if (J.turnT < 1) {
+    J.turnT = Math.min(1, J.turnT + dt / (reduceMotion ? 0.6 : TURN_DUR));
+    J.psiTarget = J.turnFrom + (J.turnTo - J.turnFrom) * easeInOut(J.turnT);
+  }
+  const psiA = 34 * (J.psiTarget - J.psi) - 5.4 * J.psiV
+    + breeze * (0.5 * Math.sin(t * 0.53) + 0.3 * Math.sin(t * 1.37 + 0.8));
+  J.psiV += psiA * dt; J.psi += J.psiV * dt;
+
+  const thetaA = -G_OVER_L * Math.sin(J.theta) - 0.85 * J.thetaV + 0.055 * psiA
+    + breeze * (0.22 * Math.sin(t * 0.71) + 0.12 * Math.sin(t * 1.9 + 2.1));
+  J.thetaV += thetaA * dt; J.theta += J.thetaV * dt;
+  // rocking along the bar: a stiffer pendulum (the hook seat resists), driven by the slide
+  const phiA = -30 * J.phi - 2.2 * J.phiV - 0.32 * J.xA / L_PEND + 0.03 * psiA
+    + breeze * 0.3 * Math.sin(t * 1.13 + 0.4);
+  J.phiV += phiA * dt; J.phi += J.phiV * dt;
+
+  // cloth: hem lags behind the body's acceleration, sleeves trail a little more loosely
+  const k = 70, c = 7.5;
+  J.hemZV += (k * (thetaA * 0.016 - J.hemZ) - c * J.hemZV) * dt; J.hemZ += J.hemZV * dt;
+  J.hemXV += (k * ((-phiA * 0.02) - J.xA * 0.004 - J.hemX) - c * J.hemXV) * dt; J.hemX += J.hemXV * dt;
+  J.twistLagV += (55 * (-J.psiV * 0.012 - J.twistLag) - 6 * J.twistLagV) * dt; J.twistLag += J.twistLagV * dt;
+  const lzNow = Math.sin(J.psi) * J.hemX + Math.cos(J.psi) * J.hemZ;
+  J.sleeveV += (26 * (-lzNow * 1.4 - J.sleeve) - 3.4 * J.sleeveV) * dt; J.sleeve += J.sleeveV * dt;
+}
+
+function poseJacket(J) {
+  J.pivot.position.x = J.x;
+  J.pivot.rotation.set(J.theta, 0, J.phi);
+  J.swivel.rotation.y = J.psi;
+  if (!J.morphs.length) return;
+  // world-space hem offset → jacket-local axes (Sway_Side = local +x, Sway_Depth = local −z)
+  const cs = Math.cos(J.psi), sn = Math.sin(J.psi);
+  const lx = cs * J.hemX - sn * J.hemZ + J.twistLag;
+  const lz = sn * J.hemX + cs * J.hemZ;
+  const w0 = THREE.MathUtils.clamp(lx / 0.035, -1, 1);
+  const w1 = THREE.MathUtils.clamp(-lz / 0.025, -1, 1);
+  const w2 = THREE.MathUtils.clamp(J.sleeve / 0.07, -1, 1);
+  for (const m of J.morphs) {
+    const inf = m.morphTargetInfluences;
+    inf[0] = w0; inf[1] = w1; if (inf.length > 2) inf[2] = w2;
   }
 }
 
 // ------------------------------------------------------------------ input
 const raycaster = new THREE.Raycaster();
 const ndc = new THREE.Vector2();
+const pickTargets = () => {
+  const t = [rackHit];
+  for (const J of jackets) { t.push(J.hit); if (J.model) t.push(J.model); }
+  return t;
+};
 function pick(clientX, clientY) {
   const r = canvas.getBoundingClientRect();
   ndc.set(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1);
   raycaster.setFromCamera(ndc, camera);
-  const targets = [jacketHit, rackHit];
-  if (jacket) targets.unshift(jacket);
-  const hit = raycaster.intersectObjects(targets, true)[0];
-  if (!hit) return null;
-  let o = hit.object;
-  while (o) { if (o === jacket || o === jacketHit) return "jacket"; o = o.parent; }
-  return "rack";
+  const hits = raycaster.intersectObjects(pickTargets(), true);
+  // a real jacket surface beats an invisible hit box; the nearest jacket wins
+  const real = hits.find(h => h.object.isMesh && h.object.material !== hitMat && h.object.userData.jacket !== undefined);
+  const any = real || hits.find(h => h.object.userData.jacket !== undefined);
+  if (any) return { type: "jacket", i: any.object.userData.jacket };
+  return hits.length ? { type: "rack" } : null;
 }
 function activate(target) {
   if (view.name === "room") { if (target) goTo("rack"); return; }
-  if (target === "jacket") turnJacket();
-  else if (!target) goTo("room");
+  if (target && target.type === "jacket") select(target.i);
+  else if (!target) stepBack();
 }
 let down = null;
-canvas.addEventListener("pointerdown", e => { down = { x: e.clientX, y: e.clientY, t: performance.now() }; });
+canvas.addEventListener("pointerdown", e => { down = { x: e.clientX, y: e.clientY }; });
 canvas.addEventListener("pointerup", e => {
   if (!down) return;
   const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
@@ -424,42 +486,60 @@ canvas.addEventListener("pointerup", e => {
 canvas.addEventListener("pointermove", e => {
   if (e.pointerType !== "mouse") return;
   const t = pick(e.clientX, e.clientY);
-  canvas.classList.toggle("pointer", !!t);
+  canvas.classList.toggle("pointer", !!t && (view.name === "room" || t.type === "jacket"));
 });
 canvas.addEventListener("keydown", e => {
-  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); activate(view.name === "room" ? "rack" : "jacket"); }
-  if (e.key === "Escape") goTo("room");
+  if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    if (view.name === "room") goTo("rack");
+    else select(selected === null ? Math.floor(N / 2) : selected);
+  }
+  if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && view.name !== "room") {
+    e.preventDefault();
+    const step = e.key === "ArrowLeft" ? -1 : 1;
+    const from = selected === null ? (step > 0 ? -1 : N) : selected;
+    select(Math.min(N - 1, Math.max(0, from + step)));
+  }
+  if (e.key === "Escape") stepBack();
 });
-backBtn.addEventListener("click", () => goTo("room"));
-window.addEventListener("keydown", e => { if (e.key === "Escape" && document.activeElement !== canvas) goTo("room"); });
+backBtn.addEventListener("click", stepBack);
+window.addEventListener("keydown", e => { if (e.key === "Escape" && document.activeElement !== canvas) stepBack(); });
 
+let hintTarget = "", hintTimer = 0;
+const captionName = document.querySelector(".caption-name");
+const captionNote = document.querySelector(".caption-note");
+function updateCaption() {
+  if (selected === null) return;
+  captionName.textContent = JACKETS[selected].name;
+  captionNote.textContent = JACKETS[selected].note;
+}
 function updateHint() {
   const verb = matchMedia("(pointer: coarse)").matches ? "Tap" : "Click";
-  const text = view.name === "room" ? `${verb} the rack to step closer`
-    : P.facing === "side" ? `${verb} the jacket to see the back` : `${verb} the jacket to turn it back`;
-  if (hintEl.textContent === text) return;
+  let text;
+  if (view.name === "room") text = `${verb} the rack to step closer`;
+  else if (view.name === "rack" || selected === null) text = `${verb} a jacket to bring it forward`;
+  else text = jackets[selected].turnTo === YAW_BACK ? `${verb} the jacket to turn it back` : `${verb} the jacket to see the back`;
+  if (hintTarget === text) return;
+  hintTarget = text;
   hintEl.classList.add("swap");
-  setTimeout(() => { hintEl.textContent = text; hintEl.classList.remove("swap"); }, 250);
+  clearTimeout(hintTimer);
+  hintTimer = setTimeout(() => { hintEl.textContent = hintTarget; hintEl.classList.remove("swap"); }, 250);
 }
 
+
 // ------------------------------------------------------------------ sizing + loop
+function requestRender() {}   // the scene redraws every frame; kept for loaders that ask for a redraw
 function resize() {
-  const w = canvas.clientWidth, h = canvas.clientHeight;
-  renderer.setSize(w, h, false);
+  renderer.setSize(canvas.clientWidth, canvas.clientHeight, false);
   if (view.t >= 1) view.current = cropFor(view.name);
   applyCrop(view.current || cropFor(view.name));
-  requestRender();
 }
 window.addEventListener("resize", resize);
 
-let needsRender = true;
-function requestRender() { needsRender = true; }
 const clock = new THREE.Clock();
 let acc = 0;
 const STEP = 1 / 120;
-
 function update(dt) {
-  // camera move
   if (view.t < 1) {
     view.t = Math.min(1, view.t + dt / view.dur);
     const to = cropFor(view.name), k = easeInOut(view.t), f = view.from;
@@ -470,13 +550,22 @@ function update(dt) {
     };
     applyCrop(view.current);
   }
-  // fixed-step physics for stable springs at any frame rate
   acc += dt;
-  while (acc >= STEP) { stepPhysics(STEP); acc -= STEP; }
-  poseJacket();
-  if (fadeJacket > 0 && fadeJacket < 1) {
-    fadeJacket = Math.min(1, (performance.now() - fadeStart) / 700);
-    jacket.traverse(o => { if (o.isMesh) { o.material.opacity = fadeJacket; if (fadeJacket >= 1) o.material.transparent = false; } });
+  while (acc >= STEP) {
+    simTime += STEP;
+    if (queue.length) {
+      const due = queue.filter(q => q.at <= simTime);
+      if (due.length) { queue = queue.filter(q => q.at > simTime); due.forEach(q => q.fn()); }
+    }
+    for (const J of jackets) stepJacket(J, STEP);
+    acc -= STEP;
+  }
+  for (const J of jackets) {
+    poseJacket(J);
+    if (J.fade > 0 && J.fade < 1) {
+      J.fade = Math.min(1, (performance.now() - J.fadeStart) / 700);
+      J.model.traverse(o => { if (o.isMesh) { o.material.opacity = J.fade; if (J.fade >= 1) o.material.transparent = false; } });
+    }
   }
 }
 function frame() {
@@ -491,6 +580,9 @@ updateHint();
 requestAnimationFrame(frame);
 
 // test handle, only with ?debug in the address
-if (new URLSearchParams(location.search).has("debug")) window.__jackob = { get jacket() { return jacket; }, get fade() { return fadeJacket; }, get view() { return view.name; }, get facing() { return P.facing; }, P, camera, renderer, activate, goTo, turnJacket,
+if (new URLSearchParams(location.search).has("debug")) window.__jackob = {
+  jackets, camera, renderer, select, stepBack, goTo, activate,
+  get view() { return view.name; }, get selected() { return selected; }, get crop() { return view.current; },
+  get loaded() { return loaded; },
   advance(seconds) { for (let t = 0; t < seconds; t += 1 / 60) update(1 / 60); },
-  get crop() { return view.current; } };
+};
