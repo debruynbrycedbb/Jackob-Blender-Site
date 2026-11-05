@@ -297,9 +297,18 @@ for (const J of jackets) {
 
 // ------------------------------------------------------------------ the table and the bag
 // Table position fitted to the room photo (x right, z away from the camera, metres).
-const TABLE_POS = new THREE.Vector3(3.33, 0, -8.244);
+const TABLE_POS = new THREE.Vector3(2.75, 0, -7.0);      // brought ~1.2 m closer than in the photo
 const TABLE_TOP_Y = 0.708;
-const TABLE_BOX = { x0: 1240, x1: 1486, y0: 576, y1: 716 };   // table outline in photo pixels
+// the table's outline in photo pixels, seen from the room camera (used to keep it in the room view)
+const TABLE_BOX = (() => {
+  const b = { x0: 1e9, x1: -1e9, y0: 1e9, y1: -1e9 };
+  for (const dx of [-0.72, 0.72]) for (const dz of [-0.72, 0.72]) for (const y of [0, 0.73]) {
+    const x = TABLE_POS.x + dx, z = TABLE_POS.z + dz;
+    const px = IMG.cx + F_PX * x / -z, py = IMG.cy - F_PX * (y - CAM_H) / -z;
+    b.x0 = Math.min(b.x0, px); b.x1 = Math.max(b.x1, px); b.y0 = Math.min(b.y0, py); b.y1 = Math.max(b.y1, py);
+  }
+  return b;
+})();
 const BAG = { w: 0.22, h: 0.275, d: 0.056 };                   // outer size incl. the pillowed faces
 const BAG_INFO = { name: "Sequin patchwork bag", note: "Black denim with blue, green and silver sequin panels" };
 
@@ -315,8 +324,36 @@ tableGroup.add(tableHit);
   s.rotation.x = -Math.PI / 2; s.position.y = 0.002;
   tableGroup.add(s);
 }
+// brushed steel: fine streaks in the roughness, highlights stretched along the brushing direction
+// (around the top, along the ribbons), reflecting the room's light and the floor
+function brushedTexture() {
+  const W = 1024, H = 512, c = document.createElement("canvas"); c.width = W; c.height = H;
+  const g = c.getContext("2d"), img = g.createImageData(W, H), d = img.data;
+  let seed = 7; const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const rows = new Float32Array(H);
+  for (let y = 0; y < H; y++) rows[y] = rnd();
+  for (let y = 0; y < H; y++) {
+    // streaks: each row has its own brightness and a slow wobble along its length
+    const base = 0.55 * rows[y] + 0.25 * rows[(y + 1) % H] + 0.2 * rows[(y + 3) % H];
+    const p1 = rnd() * 6.28, p2 = rnd() * 6.28, f1 = 1 + Math.floor(rnd() * 3), f2 = 4 + Math.floor(rnd() * 5);
+    for (let x = 0; x < W; x++) {
+      const u = x / W * Math.PI * 2;
+      const v = base + 0.12 * Math.sin(u * f1 + p1) + 0.06 * Math.sin(u * f2 + p2) + 0.08 * (rnd() - 0.5);
+      const r = Math.max(0, Math.min(255, Math.round((0.62 + 0.38 * v) * 255)));
+      const i = (y * W + x) * 4; d[i] = r; d[i + 1] = r; d[i + 2] = r; d[i + 3] = 255;
+    }
+  }
+  g.putImageData(img, 0, 0);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.NoColorSpace; t.anisotropy = 8;
+  return t;
+}
+const brushed = brushedTexture();
 const lacquer = new THREE.MeshPhysicalMaterial({
-  color: 0xd9dee5, roughness: 0.14, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.05, envMapIntensity: 1.6,
+  color: 0xd2d6db, metalness: 1, roughness: 0.42, roughnessMap: brushed,
+  anisotropy: 0.75, anisotropyRotation: 0,
+  bumpMap: brushed, bumpScale: 0.35,
+  envMapIntensity: 1.35,
 });
 let tableLoaded = false;
 loader.load("assets/table.glb", gltf => {
@@ -371,7 +408,8 @@ function heldPose(outPos, outQ) {
   // bag fills a comfortable share of the view; the bag faces the visitor, upright
   const c = view.current || cropFor(view.name);
   const a = viewportAspect(), hpx = c.w / a;
-  const dir = new THREE.Vector3((c.cx - IMG.cx) / F_PX, -(c.cy - IMG.cy) / F_PX, -1).normalize();
+  const dir = new THREE.Vector3((c.cx - IMG.cx) / F_PX, -(c.cy - IMG.cy) / F_PX, -1).normalize()
+    .applyQuaternion(camera.quaternion);
   const zH = F_PX * BAG.h / (0.62 * hpx), zW = F_PX * 0.32 / (0.8 * c.w);
   const z = Math.max(zH, zW, 0.6);
   outPos.copy(camera.position).addScaledVector(dir, z / -dir.z);
@@ -466,20 +504,26 @@ function roomCrop(a) {
   if (a >= imgA) return { cx: IMG.cx, cy: IMG.cy, w: IMG.w };     // wide: full width, trim top/bottom evenly
   // narrower screens: keep both the rack and the table in view, keep the ceiling light,
   // and use the extended floor below
-  const span = (TABLE_BOX.x1 - RACK_BOX.x0) * 1.08;
-  const w = Math.min(IMG.w, Math.max(IMG.h * a, span));
+  const span = (TABLE_BOX.x1 - RACK_BOX.x0) * 1.04;
+  const w = Math.min(IMG.w, Math.max(IMG.h * a, span), (IMG.h + IMG.pad) * a);   // never taller than the photo
   const h = w / a;
-  const cx = Math.min(Math.max((RACK_BOX.x0 + TABLE_BOX.x1) / 2, w / 2), IMG.w - w / 2);
+  // stay centred like the photo unless that would cut off the table or the rack
+  const m = 0.02 * w;
+  let cx = Math.min(Math.max(IMG.cx, TABLE_BOX.x1 + m - w / 2), RACK_BOX.x0 - m + w / 2);
+  cx = Math.min(Math.max(cx, w / 2), IMG.w - w / 2);
   const cy = h <= IMG.h ? IMG.cy : Math.min(h / 2, IMG.h + IMG.pad - h / 2);
-  return { cx: w >= IMG.w ? IMG.cx : cx, cy, w };
+  return { cx, cy, w };
 }
 function tableCrop(a) {
-  const tw = TABLE_BOX.x1 - TABLE_BOX.x0, th = TABLE_BOX.y1 - TABLE_BOX.y0;
-  const w = Math.max(tw / (a >= 1 ? 0.62 : 0.9), (th / 0.5) * a);
-  const h = w / a;
-  const cy = Math.min(Math.max((TABLE_BOX.y0 + TABLE_BOX.y1) / 2 - 6, h / 2), IMG.h + IMG.pad - h / 2);
-  const cx = Math.min((TABLE_BOX.x0 + TABLE_BOX.x1) / 2, IMG.w - w / 2);
-  return { cx, cy, w };
+  // the camera turns to face the table (a pure rotation, so the photo stays lined up) and zooms in:
+  // the table is centred and its top reads level instead of skewed by the wide-angle edge
+  const T = new THREE.Vector3(TABLE_POS.x, 0.4, TABLE_POS.z).sub(camera.position);
+  const d = T.length();
+  const yaw = Math.atan2(-T.x, -T.z), pitch = Math.atan2(T.y, Math.hypot(T.x, T.z));
+  const wTable = F_PX * 1.5 / d / (a >= 1 ? 0.62 : 0.94);
+  const hTable = F_PX * 0.86 / d / 0.62;
+  const w = Math.max(wTable, hTable * a);
+  return { cx: IMG.cx, cy: IMG.cy, w, yaw, pitch };
 }
 function rackCrop(a) {
   const rw = RACK_BOX.x1 - RACK_BOX.x0, rh = RACK_BOX.y1 - RACK_BOX.y0;
@@ -503,15 +547,40 @@ let headerOnLight = null;
 function applyCrop(c) {
   const a = viewportAspect(), h = c.w / a;
   const x0 = c.cx - c.w / 2, y0 = c.cy - h / 2;
+  camera.rotation.set(c.pitch || 0, c.yaw || 0, 0, "YXZ");
   camera.setViewOffset(IMG.w, IMG.h, x0, y0, c.w, h);
+  camera.updateMatrixWorld();
   const vw = canvas.clientWidth, vh = canvas.clientHeight;
   const yImg = y0 + (40 / vh) * h;
   const leftX = x0 + (60 / vw) * c.w, rightX = x0 + ((vw - 60) / vw) * c.w;
-  const onLight = yImg < CEILING_LIGHT.y1 && leftX > CEILING_LIGHT.x0 && leftX < CEILING_LIGHT.x1;   // the wordmark sits on the left
+  const onLight = Math.abs(c.yaw || 0) < 0.01 && yImg < CEILING_LIGHT.y1 && leftX > CEILING_LIGHT.x0 && leftX < CEILING_LIGHT.x1;   // the wordmark sits on the left
   if (onLight !== headerOnLight) { headerOnLight = onLight; document.body.classList.toggle("header-on-light", onLight); }
 }
 
 const view = { name: "room", from: null, t: 1, dur: 1.6, current: null };
+const _qv = new THREE.Quaternion(), _ev = new THREE.Euler(), _qd = new THREE.Quaternion();
+function centreRay(c) {
+  _ev.set(c.pitch || 0, c.yaw || 0, 0, "YXZ"); _qv.setFromEuler(_ev);
+  return new THREE.Vector3((c.cx - IMG.cx) / F_PX, -(c.cy - IMG.cy) / F_PX, -1).normalize().applyQuaternion(_qv);
+}
+function blendViews(f, to, t, k) {
+  const fy = f.yaw || 0, fp = f.pitch || 0, ty = to.yaw || 0, tp = to.pitch || 0;
+  const turningIn = Math.abs(ty) + Math.abs(tp) > Math.abs(fy) + Math.abs(fp);
+  const g = turningIn ? t * t : 1 - (1 - t) * (1 - t);
+  const yaw = fy + (ty - fy) * g, pitch = fp + (tp - fp) * g;
+  const d0 = centreRay(f), d1 = centreRay(to);
+  _qd.setFromUnitVectors(d0, d1);
+  const d = d0.clone().applyQuaternion(new THREE.Quaternion().slerp(_qd, k));
+  // express that direction in the partly turned camera, as a point in the photo
+  _ev.set(pitch, yaw, 0, "YXZ"); _qv.setFromEuler(_ev).invert();
+  d.applyQuaternion(_qv);
+  return {
+    cx: IMG.cx + F_PX * d.x / -d.z,
+    cy: IMG.cy - F_PX * d.y / -d.z,
+    w: Math.exp(Math.log(f.w) + (Math.log(to.w) - Math.log(f.w)) * k),
+    yaw, pitch,
+  };
+}
 function cropFor(name) {
   const a = viewportAspect();
   if (name === "table" || name === "bag") return tableCrop(a);
@@ -781,11 +850,7 @@ function update(dt) {
   if (view.t < 1) {
     view.t = Math.min(1, view.t + dt / view.dur);
     const to = cropFor(view.name), k = easeInOut(view.t), f = view.from;
-    view.current = {
-      cx: f.cx + (to.cx - f.cx) * k,
-      cy: f.cy + (to.cy - f.cy) * k,
-      w: Math.exp(Math.log(f.w) + (Math.log(to.w) - Math.log(f.w)) * k),
-    };
+    view.current = blendViews(f, to, view.t, k);
     applyCrop(view.current);
   }
   acc += dt;
