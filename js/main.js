@@ -9,7 +9,7 @@ import { Reflector } from "three/addons/objects/Reflector.js";
    Measured from the photo: rack bar centre y 448.5 px, posts x 599.6 / 1072.2 px,
    foot bottoms y 716.5 px. Assumed bar height 1.60 m and a level camera.
    ------------------------------------------------------------------ */
-const IMG = { w: 1672, h: 941, pad: 640, cx: 836, cy: 470.5 };
+const IMG = { w: 1672, h: 941, pad: 1300, cx: 836, cy: 470.5 };
 const FOV_V = 40;                                        // degrees, full photo height
 const F_PX = IMG.cy / Math.tan(THREE.MathUtils.degToRad(FOV_V / 2));
 const PX_PER_M = 167.5;                                  // at the rack's depth
@@ -81,8 +81,8 @@ const top = new THREE.DirectionalLight(0xf4f7ff, 1.25);
 top.position.set(0.4, BAR_Y + 6, RACK_Z + 2.2);
 top.target.position.set(0, 0.6, RACK_Z);
 top.castShadow = true;
-top.shadow.mapSize.set(1024, 1024);
-top.shadow.camera.left = -2; top.shadow.camera.right = 2;
+top.shadow.mapSize.set(2048, 1024);
+top.shadow.camera.left = -2.2; top.shadow.camera.right = 4.6;
 top.shadow.camera.top = 2; top.shadow.camera.bottom = -2;
 top.shadow.camera.near = 1; top.shadow.camera.far = 12;
 top.shadow.radius = 22; top.shadow.blurSamples = 16; top.shadow.bias = -0.0005;
@@ -159,13 +159,13 @@ for (const x of [-POST_X, POST_X]) {
 }
 
 // shadow catcher on the photographed floor
-const shadowFloor = new THREE.Mesh(new THREE.PlaneGeometry(8, 6), new THREE.ShadowMaterial({ opacity: 0.15 }));
-shadowFloor.rotation.x = -Math.PI / 2; shadowFloor.position.set(0, 0.001, RACK_Z);
+const shadowFloor = new THREE.Mesh(new THREE.PlaneGeometry(10, 6), new THREE.ShadowMaterial({ opacity: 0.15 }));
+shadowFloor.rotation.x = -Math.PI / 2; shadowFloor.position.set(0.9, 0.001, RACK_Z);
 shadowFloor.receiveShadow = true;
 scene.add(shadowFloor);
 
 // faint, blurred reflection in the polished floor (only the rack and jacket are reflected)
-const reflector = new Reflector(new THREE.PlaneGeometry(8, 6), {
+const reflector = new Reflector(new THREE.PlaneGeometry(10, 6), {
   textureWidth: 512, textureHeight: 512, clipBias: 0.003,
   shader: {
     uniforms: { color: { value: null }, tDiffuse: { value: null }, textureMatrix: { value: null }, uOpacity: { value: 0.12 } },
@@ -188,7 +188,7 @@ const reflector = new Reflector(new THREE.PlaneGeometry(8, 6), {
 reflector.material.transparent = true;
 reflector.material.depthWrite = false;
 reflector.rotation.x = -Math.PI / 2;
-reflector.position.set(0, 0, RACK_Z);
+reflector.position.set(0.9, 0, RACK_Z);
 reflector.renderOrder = -5;
 scene.add(reflector);
 {
@@ -294,17 +294,192 @@ for (const J of jackets) {
   });
 }
 
+
+// ------------------------------------------------------------------ the table and the bag
+// Table position fitted to the room photo (x right, z away from the camera, metres).
+const TABLE_POS = new THREE.Vector3(3.33, 0, -8.244);
+const TABLE_TOP_Y = 0.708;
+const TABLE_BOX = { x0: 1240, x1: 1486, y0: 576, y1: 716 };   // table outline in photo pixels
+const BAG = { w: 0.22, h: 0.275, d: 0.056 };                   // outer size incl. the pillowed faces
+const BAG_INFO = { name: "Sequin patchwork bag", note: "Black denim with blue, green and silver sequin panels" };
+
+const tableGroup = new THREE.Group();
+tableGroup.position.copy(TABLE_POS);
+scene.add(tableGroup);
+const tableHit = new THREE.Mesh(new THREE.CylinderGeometry(0.74, 0.3, 0.76, 24), hitMat);
+tableHit.position.y = 0.38; tableHit.userData.table = true;
+tableGroup.add(tableHit);
+{
+  const s = new THREE.Mesh(new THREE.PlaneGeometry(0.75, 0.75),
+    new THREE.MeshBasicMaterial({ map: contactTex, transparent: true, depthWrite: false, toneMapped: false, opacity: 0.8 }));
+  s.rotation.x = -Math.PI / 2; s.position.y = 0.002;
+  tableGroup.add(s);
+}
+const lacquer = new THREE.MeshPhysicalMaterial({
+  color: 0xd9dee5, roughness: 0.14, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.05, envMapIntensity: 1.6,
+});
+let tableLoaded = false;
+loader.load("assets/table.glb", gltf => {
+  gltf.scene.traverse(o => { if (o.isMesh) { o.material = lacquer; o.castShadow = true; o.receiveShadow = true; o.userData.table = true; } });
+  tableGroup.add(gltf.scene);
+  tableLoaded = true;
+}, undefined, err => { console.error(err); tableLoaded = true; });
+
+// bag: resting flat on the table, decorated side up, its sequinned top edge toward the visitor
+const bag = new THREE.Group();
+scene.add(bag);
+const bagHit = new THREE.Mesh(new THREE.BoxGeometry(BAG.w + 0.06, BAG.h + 0.06, BAG.d + 0.06), hitMat);
+bagHit.userData.bag = true;
+bag.add(bagHit);
+const REST_POS = new THREE.Vector3(TABLE_POS.x - 0.1, TABLE_TOP_Y + 0.027, TABLE_POS.z + 0.26);
+const REST_Q = new THREE.Quaternion()
+  .setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI + 0.42)
+  .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2));
+bag.position.copy(REST_POS); bag.quaternion.copy(REST_Q);
+let bagModel = null;
+loader.load("assets/sequin_bag.glb", gltf => {
+  bagModel = gltf.scene;
+  bagModel.traverse(o => {
+    if (!o.isMesh) return;
+    o.castShadow = true; o.userData.bag = true;
+    o.material.envMapIntensity = 1.0;
+  });
+  bag.add(bagModel);
+}, undefined, err => console.error(err));
+
+// a soft light that follows the bag when it's held up, and a veil that quiets the room behind it
+const bagLight = new THREE.DirectionalLight(0xfff6ee, 0);
+scene.add(bagLight, bagLight.target);
+const veil = new THREE.Mesh(new THREE.PlaneGeometry(40, 40),
+  new THREE.MeshBasicMaterial({ color: 0x10151c, transparent: true, opacity: 0, depthWrite: false }));
+veil.renderOrder = 5; veil.visible = false;
+scene.add(veil);
+
+const B = {
+  mode: "rest",              // rest | lifting | held | returning
+  t: 1, dur: 1.5,
+  fromPos: new THREE.Vector3(), fromQ: new THREE.Quaternion(), spin: 0,
+  R: new THREE.Quaternion(), // the visitor's rotation, applied on top of facing the camera
+  w: new THREE.Vector2(),    // angular velocity from dragging (rad/s about up / about the screen's horizontal)
+  flipT: 1, flipFrom: new THREE.Quaternion(),
+  veil: 0, bob: 0,
+};
+const UP = new THREE.Vector3(0, 1, 0);
+const _o = new THREE.Object3D();
+function heldPose(outPos, outQ) {
+  // the point on the line of sight through the middle of the screen, at a distance where the
+  // bag fills a comfortable share of the view; the bag faces the visitor, upright
+  const c = view.current || cropFor(view.name);
+  const a = viewportAspect(), hpx = c.w / a;
+  const dir = new THREE.Vector3((c.cx - IMG.cx) / F_PX, -(c.cy - IMG.cy) / F_PX, -1).normalize();
+  const zH = F_PX * BAG.h / (0.62 * hpx), zW = F_PX * 0.32 / (0.8 * c.w);
+  const z = Math.max(zH, zW, 0.6);
+  outPos.copy(camera.position).addScaledVector(dir, z / -dir.z);
+  _o.position.copy(outPos); _o.up.copy(UP); _o.lookAt(camera.position);
+  outQ.copy(_o.quaternion);
+  return dir;
+}
+function pickUpBag() {
+  if (B.mode === "held" || B.mode === "lifting") return;
+  B.fromPos.copy(bag.position); B.fromQ.copy(bag.quaternion);
+  B.mode = "lifting"; B.t = 0; B.dur = reduceMotion ? 0.5 : 1.6; B.spin = reduceMotion ? 0 : Math.PI * 2;
+  B.R.identity(); B.w.set(0, 0); B.flipT = 1;
+  goTo("bag");
+}
+function putBackBag() {
+  if (B.mode === "rest" || B.mode === "returning") return;
+  B.fromPos.copy(bag.position); B.fromQ.copy(bag.quaternion);
+  B.mode = "returning"; B.t = 0; B.dur = reduceMotion ? 0.5 : 1.3; B.spin = reduceMotion ? 0 : -Math.PI;
+  B.w.set(0, 0);
+  goTo("table");
+}
+function flipBag() {
+  if (B.mode !== "held") return;
+  B.flipFrom.copy(B.R); B.flipT = 0; B.w.set(0, 0);
+}
+const _p1 = new THREE.Vector3(), _q1 = new THREE.Quaternion(), _qa = new THREE.Quaternion(), _qs = new THREE.Quaternion();
+const _c1 = new THREE.Vector3(), _c2 = new THREE.Vector3();
+function bezier(p0, c1, c2, p1, t, out) {
+  const u = 1 - t;
+  return out.set(0, 0, 0).addScaledVector(p0, u * u * u).addScaledVector(c1, 3 * u * u * t)
+    .addScaledVector(c2, 3 * u * t * t).addScaledVector(p1, t * t * t);
+}
+function updateBag(dt) {
+  const target = B.mode === "lifting" || B.mode === "held" ? 1 : 0;
+  B.veil += (target - B.veil) * Math.min(1, dt * 3.2);
+  veil.visible = B.veil > 0.003;
+  if (B.mode === "rest") return;
+  const dir = heldPose(_p1, _q1);
+  if (B.mode === "lifting" || B.mode === "returning") {
+    B.t = Math.min(1, B.t + dt / B.dur);
+    const e = smoother(B.t);
+    const toPos = B.mode === "lifting" ? _p1 : REST_POS;
+    const toQ = B.mode === "lifting" ? _q1 : REST_Q;
+    if (B.mode === "returning") { /* already copied fromPos/fromQ */ }
+    // lift straight up off the table first, then travel; reversed when putting it back
+    const lift = 0.32;
+    if (B.mode === "lifting") { _c1.copy(B.fromPos).y += lift; _c2.copy(toPos).addScaledVector(dir, 1.2); }
+    else { _c1.copy(B.fromPos).addScaledVector(dir, 1.2); _c2.copy(toPos).y += lift; }
+    bezier(B.fromPos, _c1, _c2, toPos, e, bag.position);
+    _qa.slerpQuaternions(B.fromQ, toQ, e);
+    _qs.setFromAxisAngle(UP, B.spin * (1 - e));
+    bag.quaternion.copy(_qs).multiply(_qa);
+    if (B.t >= 1) {
+      if (B.mode === "lifting") { B.mode = "held"; updateHint(); }
+      else { B.mode = "rest"; bag.position.copy(REST_POS); bag.quaternion.copy(REST_Q); }
+    }
+  } else if (B.mode === "held") {
+    // flip (tap) or inertia from dragging
+    if (B.flipT < 1) {
+      B.flipT = Math.min(1, B.flipT + dt / (reduceMotion ? 0.35 : 0.9));
+      B.R.copy(_qs.setFromAxisAngle(UP, Math.PI * smoother(B.flipT))).multiply(B.flipFrom);
+    } else if (!drag.active && B.w.lengthSq() > 1e-6) {
+      rotateHeld(B.w.x * dt, B.w.y * dt, dir);
+      B.w.multiplyScalar(Math.exp(-dt * 2.6));
+    }
+    B.bob += dt;
+    const bob = reduceMotion ? 0 : 0.006 * Math.sin(B.bob * 1.3);
+    bag.position.copy(_p1).y += bob;
+    bag.quaternion.copy(B.R).multiply(_q1);
+  }
+  veil.position.copy(camera.position).addScaledVector(dir, 4.2);
+  veil.lookAt(camera.position);
+  veil.material.opacity = 0.5 * B.veil;
+  bagLight.intensity = 2.2 * B.veil;
+  bagLight.position.copy(bag.position).add(new THREE.Vector3(-1.2, 1.6, 2.2));
+  bagLight.target.position.copy(bag.position);
+}
+const _axis = new THREE.Vector3(), _qr = new THREE.Quaternion();
+function rotateHeld(yaw, pitch, dir) {
+  // yaw spins it about the vertical, pitch tips it toward or away from the visitor
+  _qr.setFromAxisAngle(UP, yaw); B.R.premultiply(_qr);
+  _axis.crossVectors(dir, UP).normalize();
+  _qr.setFromAxisAngle(_axis, -pitch); B.R.premultiply(_qr);
+}
+const drag = { active: false, x: 0, y: 0, t: 0, moved: 0, id: null };
+
 // ------------------------------------------------------------------ framing (zoom = crop of the calibrated view)
 function viewportAspect() { return canvas.clientWidth / Math.max(1, canvas.clientHeight); }
 const worldYToPx = y => IMG.cy - (y - CAM_H) * PX_PER_M;   // at the rack's depth
 function roomCrop(a) {
   const imgA = IMG.w / IMG.h;
   if (a >= imgA) return { cx: IMG.cx, cy: IMG.cy, w: IMG.w };     // wide: full width, trim top/bottom evenly
-  const w = Math.max(IMG.h * a, (RACK_BOX.x1 - RACK_BOX.x0) * 1.12);
+  // narrower screens: keep both the rack and the table in view, keep the ceiling light,
+  // and use the extended floor below
+  const span = (TABLE_BOX.x1 - RACK_BOX.x0) * 1.08;
+  const w = Math.min(IMG.w, Math.max(IMG.h * a, span));
   const h = w / a;
-  // tall screens: keep the whole rack in view, keep the ceiling light, extend the floor below
+  const cx = Math.min(Math.max((RACK_BOX.x0 + TABLE_BOX.x1) / 2, w / 2), IMG.w - w / 2);
   const cy = h <= IMG.h ? IMG.cy : Math.min(h / 2, IMG.h + IMG.pad - h / 2);
-  return { cx: IMG.cx, cy, w };
+  return { cx: w >= IMG.w ? IMG.cx : cx, cy, w };
+}
+function tableCrop(a) {
+  const tw = TABLE_BOX.x1 - TABLE_BOX.x0, th = TABLE_BOX.y1 - TABLE_BOX.y0;
+  const w = Math.max(tw / (a >= 1 ? 0.62 : 0.9), (th / 0.5) * a);
+  const h = w / a;
+  const cy = Math.min(Math.max((TABLE_BOX.y0 + TABLE_BOX.y1) / 2 - 6, h / 2), IMG.h + IMG.pad - h / 2);
+  const cx = Math.min((TABLE_BOX.x0 + TABLE_BOX.x1) / 2, IMG.w - w / 2);
+  return { cx, cy, w };
 }
 function rackCrop(a) {
   const rw = RACK_BOX.x1 - RACK_BOX.x0, rh = RACK_BOX.y1 - RACK_BOX.y0;
@@ -332,13 +507,14 @@ function applyCrop(c) {
   const vw = canvas.clientWidth, vh = canvas.clientHeight;
   const yImg = y0 + (40 / vh) * h;
   const leftX = x0 + (60 / vw) * c.w, rightX = x0 + ((vw - 60) / vw) * c.w;
-  const onLight = yImg < CEILING_LIGHT.y1 && leftX > CEILING_LIGHT.x0 && rightX < CEILING_LIGHT.x1;
+  const onLight = yImg < CEILING_LIGHT.y1 && leftX > CEILING_LIGHT.x0 && leftX < CEILING_LIGHT.x1;   // the wordmark sits on the left
   if (onLight !== headerOnLight) { headerOnLight = onLight; document.body.classList.toggle("header-on-light", onLight); }
 }
 
 const view = { name: "room", from: null, t: 1, dur: 1.6, current: null };
 function cropFor(name) {
   const a = viewportAspect();
+  if (name === "table" || name === "bag") return tableCrop(a);
   return name === "focus" ? focusCrop(a) : name === "rack" ? rackCrop(a) : roomCrop(a);
 }
 function goTo(name) {
@@ -385,6 +561,8 @@ function select(i) {
   goTo("focus");
 }
 function stepBack() {
+  if (view.name === "bag") { putBackBag(); return; }
+  if (view.name === "table") { goTo("room"); return; }
   if (view.name === "focus") {
     queue = [];
     let delay = 0;
@@ -454,7 +632,9 @@ function poseJacket(J) {
 const raycaster = new THREE.Raycaster();
 const ndc = new THREE.Vector2();
 const pickTargets = () => {
-  const t = [rackHit];
+  const t = [rackHit, tableHit, bagHit];
+  if (bagModel) t.push(bagModel);
+  if (tableGroup.children.length > 2) t.push(tableGroup.children[2]);
   for (const J of jackets) { t.push(J.hit); if (J.model) t.push(J.model); }
   return t;
 };
@@ -464,37 +644,91 @@ function pick(clientX, clientY) {
   raycaster.setFromCamera(ndc, camera);
   const hits = raycaster.intersectObjects(pickTargets(), true);
   // a real jacket surface beats an invisible hit box; the nearest jacket wins
+  if (hits.length && (hits[0].object.userData.bag || (hits.find(h => h.object.userData.bag) && view.name !== "rack" && view.name !== "focus")))
+    return { type: "bag" };
   const real = hits.find(h => h.object.isMesh && h.object.material !== hitMat && h.object.userData.jacket !== undefined);
   const any = real || hits.find(h => h.object.userData.jacket !== undefined);
   if (any) return { type: "jacket", i: any.object.userData.jacket };
+  if (hits.find(h => h.object.userData.table)) return { type: "table" };
   return hits.length ? { type: "rack" } : null;
 }
 function activate(target) {
-  if (view.name === "room") { if (target) goTo("rack"); return; }
-  if (target && target.type === "jacket") select(target.i);
-  else if (!target) stepBack();
+  const type = target && target.type;
+  if (view.name === "bag") { if (type === "bag") flipBag(); else putBackBag(); return; }
+  if (view.name === "room") {
+    if (type === "table" || type === "bag") goTo("table");
+    else if (type) goTo("rack");
+    return;
+  }
+  if (view.name === "table") {
+    if (type === "bag") pickUpBag();
+    else if (type === "rack" || type === "jacket") goTo("rack");
+    else if (!type) goTo("room");
+    return;
+  }
+  if (type === "jacket") select(target.i);
+  else if (type === "table" || type === "bag") { if (view.name === "focus") stepBack(); goTo("table"); }
+  else if (!type) stepBack();
 }
 let down = null;
-canvas.addEventListener("pointerdown", e => { down = { x: e.clientX, y: e.clientY }; });
+canvas.addEventListener("pointerdown", e => {
+  down = { x: e.clientX, y: e.clientY };
+  if (view.name === "bag" && B.mode === "held") {
+    drag.active = true; drag.x = e.clientX; drag.y = e.clientY; drag.t = performance.now(); drag.moved = 0;
+    drag.id = e.pointerId; canvas.setPointerCapture(e.pointerId); B.w.set(0, 0); B.flipT = 1;
+    canvas.classList.add("grabbing");
+  }
+});
+function endDrag(e) {
+  if (!drag.active || (e && e.pointerId !== drag.id)) return;
+  drag.active = false; canvas.classList.remove("grabbing");
+  if (performance.now() - drag.t > 90) B.w.set(0, 0);     // let go after holding still: no spin
+}
 canvas.addEventListener("pointerup", e => {
+  endDrag(e);
   if (!down) return;
   const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
   down = null;
   if (moved > 10) return;
   activate(pick(e.clientX, e.clientY));
 });
+canvas.addEventListener("pointercancel", e => { endDrag(e); down = null; });
 canvas.addEventListener("pointermove", e => {
+  if (drag.active && e.pointerId === drag.id) {
+    const now = performance.now(), dtm = Math.max(1, now - drag.t) / 1000;
+    const k = 5.2 / Math.min(canvas.clientWidth, canvas.clientHeight * 1.3);   // ~a full turn per screen width
+    const dx = (e.clientX - drag.x) * k, dy = (e.clientY - drag.y) * k;
+    const dir = heldPose(_p1, _q1);
+    rotateHeld(dx, dy, dir);
+    B.w.set(dx / dtm, dy / dtm).clampLength(0, 9);
+    drag.x = e.clientX; drag.y = e.clientY; drag.t = now;
+    return;
+  }
   if (e.pointerType !== "mouse") return;
   const t = pick(e.clientX, e.clientY);
-  canvas.classList.toggle("pointer", !!t && (view.name === "room" || t.type === "jacket"));
+  const clickable = !!t && (view.name === "room" || t.type === "jacket" || t.type === "bag"
+    || (view.name === "table" && t.type !== "table"));
+  canvas.classList.toggle("pointer", clickable && view.name !== "bag");
+  canvas.classList.toggle("grab", view.name === "bag" && B.mode === "held");
 });
 canvas.addEventListener("keydown", e => {
+  if (view.name === "bag" && B.mode === "held" && e.key.startsWith("Arrow")) {
+    e.preventDefault();
+    const s = 0.35, dir = heldPose(_p1, _q1);
+    rotateHeld(e.key === "ArrowLeft" ? -s : e.key === "ArrowRight" ? s : 0, e.key === "ArrowUp" ? -s : e.key === "ArrowDown" ? s : 0, dir);
+    return;
+  }
   if (e.key === "Enter" || e.key === " ") {
     e.preventDefault();
     if (view.name === "room") goTo("rack");
+    else if (view.name === "table") pickUpBag();
+    else if (view.name === "bag") flipBag();
     else select(selected === null ? Math.floor(N / 2) : selected);
   }
-  if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && view.name !== "room") {
+  if (view.name === "room" && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+    e.preventDefault(); goTo(e.key === "ArrowRight" ? "table" : "rack"); return;
+  }
+  if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && (view.name === "rack" || view.name === "focus")) {
     e.preventDefault();
     const step = e.key === "ArrowLeft" ? -1 : 1;
     const from = selected === null ? (step > 0 ? -1 : N) : selected;
@@ -509,16 +743,20 @@ let hintTarget = "", hintTimer = 0;
 const captionName = document.querySelector(".caption-name");
 const captionNote = document.querySelector(".caption-note");
 function updateCaption() {
-  if (selected === null) return;
-  captionName.textContent = JACKETS[selected].name;
-  captionNote.textContent = JACKETS[selected].note;
+  const info = view.name === "bag" ? BAG_INFO : selected !== null ? JACKETS[selected] : null;
+  if (!info) return;
+  captionName.textContent = info.name;
+  captionNote.textContent = info.note;
 }
 function updateHint() {
   const verb = matchMedia("(pointer: coarse)").matches ? "Tap" : "Click";
   let text;
-  if (view.name === "room") text = `${verb} the rack to step closer`;
+  if (view.name === "room") text = `${verb} the rack or the table to step closer`;
+  else if (view.name === "table") text = `${verb} the bag to pick it up`;
+  else if (view.name === "bag") text = B.mode === "held" ? "Drag to turn the bag" : "";
   else if (view.name === "rack" || selected === null) text = `${verb} a jacket to bring it forward`;
   else text = jackets[selected].turnTo === YAW_BACK ? `${verb} the jacket to turn it back` : `${verb} the jacket to see the back`;
+  if (!text) text = hintTarget;
   if (hintTarget === text) return;
   hintTarget = text;
   hintEl.classList.add("swap");
@@ -558,6 +796,7 @@ function update(dt) {
       if (due.length) { queue = queue.filter(q => q.at > simTime); due.forEach(q => q.fn()); }
     }
     for (const J of jackets) stepJacket(J, STEP);
+    updateBag(STEP);
     acc -= STEP;
   }
   for (const J of jackets) {
@@ -571,7 +810,7 @@ function update(dt) {
 function frame() {
   update(Math.min(clock.getDelta(), 0.05));
   renderer.render(scene, camera);
-  if (!canvas.classList.contains("ready")) canvas.classList.add("ready");
+  if (tableLoaded && !canvas.classList.contains("ready")) canvas.classList.add("ready");
   requestAnimationFrame(frame);
 }
 view.current = roomCrop(viewportAspect());
@@ -583,6 +822,7 @@ requestAnimationFrame(frame);
 if (new URLSearchParams(location.search).has("debug")) window.__jackob = {
   jackets, camera, renderer, select, stepBack, goTo, activate,
   get view() { return view.name; }, get selected() { return selected; }, get crop() { return view.current; },
-  get loaded() { return loaded; },
+  get loaded() { return loaded; }, get tableLoaded() { return tableLoaded; }, get bagReady() { return !!bagModel; },
+  get bagMode() { return B.mode; }, bag, B, pickUpBag, putBackBag, flipBag, rotateHeld, heldPose,
   advance(seconds) { for (let t = 0; t < seconds; t += 1 / 60) update(1 / 60); },
 };
