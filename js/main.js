@@ -95,7 +95,7 @@ const BG_D = 40;
 const bgH = 2 * BG_D * Math.tan(THREE.MathUtils.degToRad(FOV_V / 2));
 const bgW = bgH * IMG.w / IMG.h;
 const bgFullH = bgH * (IMG.h + IMG.pad) / IMG.h;
-const bgTex = new THREE.TextureLoader().load("assets/room.jpg", () => requestRender());
+const bgTex = new THREE.TextureLoader().load(`assets/room.jpg?v=${document.documentElement.dataset.v || "1"}`, () => requestRender());
 bgTex.colorSpace = THREE.SRGBColorSpace;
 bgTex.anisotropy = 4;
 const background = new THREE.Mesh(
@@ -270,9 +270,39 @@ rackHit.position.set(0, (BAR_Y + 0.12) / 2 - 0.02, 0);
 rack.add(rackHit);
 
 const loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
+// Every file carries the site version, so a browser never mixes a cached old model with new code.
+const ASSET_V = document.documentElement.dataset.v || "1";
+const assetUrl = f => `${f}?v=${ASSET_V}`;
+// Loads a model, retrying if the download fails or stalls (no progress for 15 s), up to 4 tries.
+function loadModel(file, label, onLoad, onFail) {
+  let attempt = 0;
+  const tryOnce = () => {
+    attempt++;
+    let settled = false, timer = 0;
+    const url = attempt === 1 ? assetUrl(file) : `${assetUrl(file)}&retry=${attempt}`;
+    const arm = () => { clearTimeout(timer); timer = setTimeout(() => fail(new Error("download stalled")), 15000); };
+    const fail = err => {
+      if (settled) return; settled = true; clearTimeout(timer);
+      console.warn(`${label}: attempt ${attempt} failed`, err);
+      if (attempt < 4) setTimeout(tryOnce, 600 * attempt);
+      else onFail(err);
+    };
+    arm();
+    loader.load(url, gltf => {
+      if (settled) return; settled = true; clearTimeout(timer);
+      onLoad(gltf);
+    }, () => { if (!settled) arm(); }, fail);
+  };
+  tryOnce();
+}
 let loaded = 0;
+function showLoading() {
+  if (loaded >= N) { loadingEl.classList.add("done"); return; }
+  loadingEl.textContent = loaded ? `Hanging the jackets… ${loaded} of ${N}` : "Hanging the jackets…";
+  loadingEl.classList.remove("done");
+}
 for (const J of jackets) {
-  loader.load(J.def.file, gltf => {
+  loadModel(J.def.file, J.def.name, gltf => {
     const model = gltf.scene;
     model.position.y = -JACKET_DROP;
     model.traverse(o => {
@@ -286,11 +316,13 @@ for (const J of jackets) {
     });
     J.swivel.add(model);
     J.model = model; J.fade = 0.0001; J.fadeStart = performance.now();
-    if (++loaded === 1) loadingEl.classList.add("done");
-  }, undefined, err => {
+    loaded++; showLoading(); updateHint();
+  }, err => {
     console.error(err);
-    loadingEl.textContent = "A jacket could not be loaded. Refresh to try again.";
+    J.failed = true;
+    loadingEl.textContent = `The ${J.def.name.toLowerCase()} couldn't be loaded. Refresh the page to try again.`;
     loadingEl.classList.remove("done");
+    updateHint();
   });
 }
 
@@ -356,11 +388,11 @@ const lacquer = new THREE.MeshPhysicalMaterial({
   envMapIntensity: 1.35,
 });
 let tableLoaded = false;
-loader.load("assets/table.glb", gltf => {
+loadModel("assets/table.glb", "Table", gltf => {
   gltf.scene.traverse(o => { if (o.isMesh) { o.material = lacquer; o.castShadow = true; o.receiveShadow = true; o.userData.table = true; } });
   tableGroup.add(gltf.scene);
   tableLoaded = true;
-}, undefined, err => { console.error(err); tableLoaded = true; });
+}, err => { console.error(err); tableLoaded = true; });
 
 // bag: resting flat on the table, decorated side up, its sequinned top edge toward the visitor
 const bag = new THREE.Group();
@@ -374,7 +406,7 @@ const REST_Q = new THREE.Quaternion()
   .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2));
 bag.position.copy(REST_POS); bag.quaternion.copy(REST_Q);
 let bagModel = null;
-loader.load("assets/sequin_bag.glb", gltf => {
+loadModel("assets/sequin_bag.glb", "Bag", gltf => {
   bagModel = gltf.scene;
   bagModel.traverse(o => {
     if (!o.isMesh) return;
@@ -382,7 +414,7 @@ loader.load("assets/sequin_bag.glb", gltf => {
     o.material.envMapIntensity = 1.0;
   });
   bag.add(bagModel);
-}, undefined, err => console.error(err));
+}, err => console.error(err));
 
 // a soft light that follows the bag when it's held up, and a veil that quiets the room behind it
 const bagLight = new THREE.DirectionalLight(0xfff6ee, 0);
@@ -824,6 +856,7 @@ function updateHint() {
   else if (view.name === "table") text = `${verb} the bag to pick it up`;
   else if (view.name === "bag") text = B.mode === "held" ? "Drag to turn the bag" : "";
   else if (view.name === "rack" || selected === null) text = `${verb} a jacket to bring it forward`;
+  else if (!jackets[selected].model) text = jackets[selected].failed ? "This jacket couldn't be loaded" : "Loading this jacket…";
   else text = jackets[selected].turnTo === YAW_BACK ? `${verb} the jacket to turn it back` : `${verb} the jacket to see the back`;
   if (!text) text = hintTarget;
   if (hintTarget === text) return;

@@ -15,7 +15,7 @@
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 body {
-  background: var(--wall) url("../assets/room.jpg") center 30% / cover no-repeat;
+  background: var(--wall) url("../assets/room.jpg?v=20261105-1") center 30% / cover no-repeat;
   color: var(--wall-ink);
   font-family: var(--font);
   font-size: 15px;
